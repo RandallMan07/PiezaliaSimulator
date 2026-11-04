@@ -1,0 +1,1 @@
+"""PiezaLink catalog synchronization application."""

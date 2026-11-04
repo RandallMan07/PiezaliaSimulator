@@ -1,0 +1,480 @@
+openapi: 3.1.0
+info:
+  title: API de Piezalia
+  version: "1.0"
+  description: |
+    Piezalia es el marketplace de piezas donde se publica el catálogo. Cada cliente tiene una o varias cuentas;
+    cada cuenta tiene sus propios anuncios y su propio token.
+
+    ## Autenticación
+
+    Cada petición a `/accounts/{account}/...` lleva el token de esa cuenta: `Authorization: Bearer tok-1-a8f3`.
+    Los tokens de cada cuenta están en `accounts.csv` (`account_id,token`).
+
+    ## Anuncios
+
+    - **El portal permite varios anuncios con el mismo `sku` en la misma cuenta.** No impide duplicados.
+    - **Los anuncios que el cliente publica a mano desde el portal no tienen `sku`** (`"sku": null`).
+    - `listing_id` lo asigna el portal. `sku` es la referencia del producto en tu catálogo y no se puede cambiar.
+    - `price` se devuelve siempre como string con 2 decimales (`"12.50"`). En las peticiones se acepta número (`12.5`)
+      o string (`"12.50"`): mayor que 0, máximo `99999.99`, como mucho 2 decimales.
+    - `title`: no vacío, máximo 80 caracteres.
+
+    ## Errores
+
+    Todos los errores tienen el mismo cuerpo: `{"error": "token_expired", "detail": "..."}`.
+
+    | HTTP | `error` | Qué significa para quien llama |
+    |---|---|---|
+    | 404 | `account_not_found` | La cuenta no existe en el portal. |
+    | 404 | `listing_not_found` | El anuncio no existe o no es de esa cuenta. |
+    | 401 | `invalid_token` | Falta el token o no es el de esa cuenta. |
+    | 401 | `token_expired` | El token de la cuenta ha caducado. **No se arregla reintentando**: el cliente tiene que renovar el token en el portal. |
+    | 422 | `validation` | La petición no es válida; `detail` dice qué falla. No se aplica nada. |
+    | 429 | `rate_limited` | Demasiadas peticiones. No se aplica nada. Espera los segundos de la cabecera `Retry-After` y reintenta. |
+    | 503 | `unavailable` | Fallo transitorio del portal. No se aplica nada. Se puede reintentar. |
+    | 504 | `gateway_timeout` | El portal no respondió a tiempo: **la operación puede haberse aplicado o no**. |
+
+    El portal puede devolver 429 en cualquier petición, y 503 y 504 en cualquier escritura (POST, PUT, DELETE).
+
+    ## Simulador
+
+    Los endpoints `/_admin/...` existen solo en el simulador, para tus pruebas locales, y no llevan autenticación.
+    No existen en el portal real.
+servers:
+  - url: http://portal:8080
+    description: Desde los demás servicios del docker-compose
+  - url: http://localhost:8080
+    description: Desde tu máquina, si publicas el puerto
+tags:
+  - name: Anuncios
+  - name: Simulador (solo en local)
+components:
+  securitySchemes:
+    accountToken:
+      type: http
+      scheme: bearer
+      description: El token de la cuenta a la que se llama (`accounts.csv`).
+  parameters:
+    account:
+      name: account
+      in: path
+      required: true
+      schema:
+        type: integer
+      description: Número de la cuenta.
+    listingId:
+      name: listing_id
+      in: path
+      required: true
+      schema:
+        type: string
+      example: L18
+  schemas:
+    Listing:
+      type: object
+      required: [listing_id, account, sku, title, price, created_at, updated_at]
+      properties:
+        listing_id:
+          type: string
+          description: Lo asigna el portal.
+          example: L17
+        account:
+          type: integer
+          example: 1
+        sku:
+          type: [string, "null"]
+          description: Referencia del producto en tu catálogo. `null` en los anuncios publicados a mano.
+          example: "1084"
+        title:
+          type: string
+          maxLength: 80
+          example: Faro delantero izquierdo
+        price:
+          type: string
+          description: Siempre con 2 decimales.
+          example: "406.15"
+        created_at:
+          type: string
+          format: date-time
+          description: ISO 8601 en UTC.
+        updated_at:
+          type: string
+          format: date-time
+    ListingPage:
+      type: object
+      required: [items, page, next_page]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Listing"
+        page:
+          type: integer
+          example: 1
+        next_page:
+          type: [integer, "null"]
+          description: Número de la página siguiente, o `null` si esta es la última.
+          example: 2
+    Price:
+      oneOf:
+        - type: number
+        - type: string
+      description: Mayor que 0, máximo 99999.99, como mucho 2 decimales.
+      example: 32.5
+    NewListing:
+      type: object
+      required: [sku, title, price]
+      properties:
+        sku:
+          type: string
+          minLength: 1
+          example: "7525"
+        title:
+          type: string
+          minLength: 1
+          maxLength: 80
+          example: Pastillas de freno
+        price:
+          $ref: "#/components/schemas/Price"
+    ListingUpdate:
+      type: object
+      required: [title, price]
+      description: El `sku` no se puede cambiar.
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 80
+          example: Pastillas de freno delanteras
+        price:
+          $ref: "#/components/schemas/Price"
+    Error:
+      type: object
+      required: [error, detail]
+      properties:
+        error:
+          type: string
+          enum: [account_not_found, listing_not_found, invalid_token, token_expired, validation, rate_limited, unavailable, gateway_timeout]
+        detail:
+          type: string
+      example:
+        error: token_expired
+        detail: the token has expired; renew it in the portal
+    SimulatorAccount:
+      type: object
+      properties:
+        token:
+          type: string
+        expired:
+          type: boolean
+    SimulatorConfig:
+      type: object
+      description: Configuración completa del simulador; la de arranque está en `config/default.json`.
+      properties:
+        page_size:
+          type: integer
+        max_title_length:
+          type: integer
+        accounts:
+          type: object
+          additionalProperties:
+            $ref: "#/components/schemas/SimulatorAccount"
+        seed_listings:
+          type: array
+          description: Anuncios con los que arranca el portal (`sku` null = publicado a mano).
+          items:
+            type: object
+            properties:
+              account:
+                type: integer
+              sku:
+                type: [string, "null"]
+              title:
+                type: string
+              price:
+                type: string
+        failures:
+          type: object
+          description: Fallos que inyecta el simulador, para probar tu aplicación en condiciones adversas.
+          properties:
+            rate_limit_every:
+              type: integer
+              description: Cada N peticiones a una cuenta, una responde 429.
+            transient_every:
+              type: integer
+              description: Cada N escrituras en una cuenta, una responde 503.
+            transient_rules:
+              type: array
+              description: Escrituras concretas (método, cuenta, sku) que responden 503 un número de veces.
+              items:
+                type: object
+            accept_then_timeout:
+              type: array
+              description: Escrituras concretas que se aplican y aun así responden 504.
+              items:
+                type: object
+            delay_ms:
+              type: integer
+              description: Milisegundos de espera en cada petición.
+    SimulatorCall:
+      type: object
+      properties:
+        seq:
+          type: integer
+        method:
+          type: string
+        path:
+          type: string
+        account:
+          type: integer
+        sku:
+          type: [string, "null"]
+        status:
+          type: integer
+  responses:
+    Unauthorized:
+      description: "`invalid_token` o `token_expired`."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    AccountNotFound:
+      description: "`account_not_found`."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: "`account_not_found` o `listing_not_found`."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Validation:
+      description: "`validation`: la petición no es válida. No se aplica nada."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    RateLimited:
+      description: "`rate_limited`: espera los segundos de `Retry-After` y reintenta. No se aplica nada."
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+          description: Segundos que hay que esperar.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unavailable:
+      description: "`unavailable`: fallo transitorio. No se aplica nada. Se puede reintentar."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    GatewayTimeout:
+      description: "`gateway_timeout`: el portal no respondió a tiempo. La operación puede haberse aplicado o no."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+paths:
+  /accounts/{account}/listings:
+    parameters:
+      - $ref: "#/components/parameters/account"
+    get:
+      tags: [Anuncios]
+      summary: Listar los anuncios de una cuenta
+      description: |
+        Paginado. `page` empieza en 1 (por defecto 1). Orden por `listing_id` ascendente.
+        Hay que seguir pidiendo páginas mientras `next_page` no sea `null`.
+      security:
+        - accountToken: []
+      parameters:
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+      responses:
+        "200":
+          description: Una página de anuncios.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListingPage"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/AccountNotFound"
+        "422":
+          $ref: "#/components/responses/Validation"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+    post:
+      tags: [Anuncios]
+      summary: Publicar un anuncio
+      security:
+        - accountToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NewListing"
+      responses:
+        "201":
+          description: Anuncio publicado.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Listing"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/AccountNotFound"
+        "422":
+          $ref: "#/components/responses/Validation"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
+  /accounts/{account}/listings/{listing_id}:
+    parameters:
+      - $ref: "#/components/parameters/account"
+      - $ref: "#/components/parameters/listingId"
+    put:
+      tags: [Anuncios]
+      summary: Actualizar un anuncio
+      security:
+        - accountToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ListingUpdate"
+      responses:
+        "200":
+          description: Anuncio actualizado.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Listing"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/Validation"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
+    delete:
+      tags: [Anuncios]
+      summary: Retirar un anuncio
+      security:
+        - accountToken: []
+      responses:
+        "204":
+          description: Anuncio retirado. Sin cuerpo.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
+  /_admin/state:
+    get:
+      tags: [Simulador (solo en local)]
+      summary: Estado completo del simulador
+      responses:
+        "200":
+          description: Cuentas (con si su token está caducado) y todos los anuncios de todas las cuentas.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accounts:
+                    type: object
+                    additionalProperties:
+                      type: object
+                      properties:
+                        expired:
+                          type: boolean
+                  listings:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Listing"
+  /_admin/calls:
+    get:
+      tags: [Simulador (solo en local)]
+      summary: Peticiones recibidas a la API, en orden
+      responses:
+        "200":
+          description: Una entrada por petición a `/accounts/...`.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SimulatorCall"
+  /_admin/reset:
+    post:
+      tags: [Simulador (solo en local)]
+      summary: Volver al estado inicial
+      description: Sin cuerpo, recarga `config/default.json`. Con cuerpo, arranca con esa configuración.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SimulatorConfig"
+      responses:
+        "200":
+          description: Estado reiniciado (anuncios, tokens y registro de llamadas).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  listings:
+                    type: integer
+  /_admin/accounts/{account}/renew:
+    parameters:
+      - $ref: "#/components/parameters/account"
+    post:
+      tags: [Simulador (solo en local)]
+      summary: Renovar el token de una cuenta (deja de estar caducado)
+      responses:
+        "200":
+          description: Estado de la cuenta.
+        "404":
+          $ref: "#/components/responses/AccountNotFound"
+  /_admin/accounts/{account}/expire:
+    parameters:
+      - $ref: "#/components/parameters/account"
+    post:
+      tags: [Simulador (solo en local)]
+      summary: Caducar el token de una cuenta
+      responses:
+        "200":
+          description: Estado de la cuenta.
+        "404":
+          $ref: "#/components/responses/AccountNotFound"
