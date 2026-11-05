@@ -17,7 +17,13 @@ def main(argv=None):
         if args:
             return run_commands(args)
         return run_menu()
-    except (KeyboardInterrupt, EOFError):
+    except KeyboardInterrupt:
+        if args:
+            print("\nImport interrupted.", file=sys.stderr)
+            return 130
+        print("\nGoodbye!")
+        return 0
+    except EOFError:
         print("\nGoodbye!")
         return 0
 

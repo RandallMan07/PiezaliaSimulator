@@ -1,8 +1,8 @@
 """Interactive menus; actions should call services in piezalink.core."""
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from importlib.resources import files
-from typing import Callable
 
 
 @dataclass(frozen=True)
@@ -44,8 +44,32 @@ def show_menu(menu, *, is_main=True):
         return
 
 
+def import_catalogue():
+    import psycopg
+
+    from piezalink.core.feed_import import FeedImportError, LargeRemovalsError, import_feed
+    from piezalink.cli.commands import format_import_result
+
+    path = input("Feed CSV path (blank to return): ").strip()
+    if not path:
+        return
+    try:
+        try:
+            result = import_feed(path)
+        except LargeRemovalsError as exc:
+            print(exc)
+            confirmation = input("I verified this is a complete feed. Continue? [y/N]: ")
+            if confirmation.strip().lower() != "y":
+                print("Import cancelled; no catalogue changes applied.")
+                return
+            result = import_feed(path, allow_large_removals=True)
+        print(format_import_result(result))
+    except (FeedImportError, OSError, ValueError, psycopg.Error) as exc:
+        print(f"Import failed: {exc}")
+
+
 def run_menu():
     print_logo()
-    show_menu(Menu("PiezaLink"))
+    show_menu(Menu("PiezaLink", (MenuItem("Import catalogue", import_catalogue),)))
     print("Goodbye!")
     return 0

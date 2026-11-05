@@ -1,0 +1,13 @@
+.git
+.env
+.env.*
+**/.env
+**/.env.*
+**/__pycache__
+**/*.py[cod]
+**/*.egg-info
+**/.venv
+**/venv
+**/build
+**/dist
+tech-test.zip
