@@ -68,8 +68,19 @@ def import_catalogue():
         print(f"Import failed: {exc}")
 
 
+def sync_catalogue():
+    import psycopg
+    from piezalink.core.sync import SyncError, sync_catalogue as run_sync
+    from piezalink.cli.commands import format_sync_result
+    try:
+        result = run_sync(progress=lambda message: print(message, flush=True))
+        print(format_sync_result(result))
+    except (SyncError, ValueError, psycopg.Error) as error:
+        print(f"Sync failed: {error}")
+
+
 def run_menu():
     print_logo()
-    show_menu(Menu("PiezaLink", (MenuItem("Import catalogue", import_catalogue),)))
+    show_menu(Menu("PiezaLink", (MenuItem("Import catalogue", import_catalogue), MenuItem("Sync catalogue", sync_catalogue))))
     print("Goodbye!")
     return 0

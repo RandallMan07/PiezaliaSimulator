@@ -8,6 +8,10 @@ will make the developement easier.
 
 > The `<feed>` is the ground truth.
 
+We store the whole title in the catalog, even if it exceeds Piezalia's limit of
+80 characters. We will check that limit when publishing, then decide whether to
+truncate the published title or alert the user. The source title stays unchanged.
+
 The listings recovered from calling the portal's API will only tell us if incorrect
 data is uploaded.
 
@@ -60,11 +64,20 @@ a publishing in Piezalia. Each account has its own publishing, so we store it
 in the relation between the catalog item and the account. It starts as `null`
 and we update it after listing the item.
 
+## Accounts
+
+We consider `accounts.csv` pre-existing data. When initializing the database, we
+load those accounts in the same transaction as the schema. Existing tokens are
+not overwritten, and later startups do not load the file again. The one-time
+upgrade also adds any missing accounts to an existing simulation database.
+
 ## Importing the feed
 
 We read the CSV into temporary staging tables, then compare the full catalog
-using SQL. If any row is incorrect, we reject the whole feed, otherwise a bad
-row could look like a sold item. Empty feeds are rejected too. If more than 20%
+using SQL. We ignore blank lines and normalize prices without rounding. Identical normalized
+product duplicates can be merged, but conflicting ones must be corrected. If any
+row is still incorrect, we reject the whole feed, otherwise a bad row could look
+like a sold item. Empty feeds are rejected too. If more than 20%
 of active items disappear, we have to verify the feed before allowing it.
 
 The import runs in one transaction. Another import running at the same time
@@ -75,6 +88,24 @@ If an account is removed from an item, we keep its `listing_id` with
 `desired=false` until sync retires it. An absent `modified` item is also put to
 `sold`. We only delete an absent `unlisted` item if it has no portal references.
 A sold item appearing again is put to `modified` so sync can revise it.
+
+## Sync
+
+Only one sync runs at a time. We capture the candidates once and read the latest
+data before each request. If an import changes an item while the request is in
+progress, the response only confirms the revision sent. The newer change stays
+pending for the next cronjob, without chaining complete syncs.
+
+We list all pages first, adopt existing listings and preserve manual ones. Sold
+items and removed accounts are retired first. We keep the oldest listing when
+there are duplicates, and retire the extra copies after checking its content.
+The publishing title is limited to 80 characters, the source title stays complete.
+
+Requests are recorded before sending them. A timeout can happen after Piezalia
+accepted a write, so we check the portal before retrying. Pending creations also
+keep their local product/account references when a new feed removes them. Partial
+success is kept, and another run can recover after interruption. Short database
+transactions leave imports available while the HTTP requests are running.
 
 ---
 

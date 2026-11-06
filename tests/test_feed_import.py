@@ -70,6 +70,66 @@ class ParsingTests(unittest.TestCase):
                 patch("sys.stderr", new_callable=io.StringIO):
             self.assertEqual(main(["import", "feed.csv"]), 130)
 
+    def test_decimal_normalizations_stack_without_rounding(self):
+        from decimal import Decimal
+        for price in ("9,950", "9.9500", "9,95", "9.95"):
+            with self.subTest(price=price):
+                text = f'product_id,title,price,store_id\np,Part,"{price}",3\n'
+                self.assertEqual(list(_validated_rows(io.StringIO(text)))[0][3], Decimal("9.95"))
+        for price in ("9,951", "1.234,50", "45.90 €", "-5", "0", "100000"):
+            with self.subTest(price=price), self.assertRaises(FeedValidationError):
+                list(_validated_rows(io.StringIO(f'product_id,title,price,store_id\np,Part,"{price}",3\n')))
+
+    def test_unquoted_decimal_comma_reconstruction(self):
+        from decimal import Decimal
+        from piezalink.core.feed_import import FeedRows
+        for header, record in (
+            ("product_id,title,price,store_id", 'p,"Part, red",9,950,3'),
+            ("title,price,product_id,store_id", "Part,9,950,p,3"),
+            ("product_id,title,store_id,price", "p,Part,3,9,950"),
+        ):
+            with self.subTest(header=header):
+                rows = FeedRows(io.StringIO(header + "\n" + record + "\n"))
+                values = list(rows)
+                rows.report.raise_if_errors()
+                self.assertEqual(values[0][1], "p")
+                self.assertEqual(values[0][3], Decimal("9.95"))
+                self.assertEqual(values[0][4], [3])
+                self.assertEqual(rows.report.reconstructed_prices, 1)
+
+    def test_reconstruction_rejects_ambiguous_or_extra_fields(self):
+        for record in (
+            "p,Part,1,00,3,3", "p,Part,9,951,3", "p,Part,red,9,3",
+            "p,Part,1,00,1;3", "p,Part,1.00,3,extra",
+        ):
+            with self.subTest(record=record), self.assertRaises(FeedValidationError):
+                list(_validated_rows(io.StringIO("product_id,title,price,store_id\n" + record)))
+
+    def test_blank_lines_are_ignored_but_empty_records_are_invalid(self):
+        from piezalink.core.feed_import import FeedRows
+        rows = FeedRows(io.StringIO("\nproduct_id,title,price,store_id\n  \t\np,Part,1,1\n\n"))
+        values = list(rows)
+        rows.report.raise_if_errors()
+        self.assertEqual(rows.report.skipped_blank_lines, 3)
+        self.assertEqual(values[0][0], 4)
+        with self.assertRaises(FeedValidationError):
+            list(_validated_rows(io.StringIO("product_id,title,price,store_id\n,,,\n")))
+
+    def test_errors_use_physical_start_lines_for_multiline_records(self):
+        text = 'product_id,title,price,store_id\np,"Part\ncontinued",FREE,1\nq,Part,FREE,1\n'
+        with self.assertRaises(FeedValidationError) as failure:
+            list(_validated_rows(io.StringIO(text)))
+        self.assertIn("Line 2, product 'p'", str(failure.exception))
+        self.assertIn("Line 4, product 'q'", str(failure.exception))
+
+    def test_reports_multiple_field_errors_and_rejects_nul_before_copy(self):
+        text = "product_id,title,price,store_id\np,,FREE,1;2\nq,Part\x00,1,1\n"
+        with self.assertRaises(FeedValidationError) as failure:
+            list(_validated_rows(io.StringIO(text)))
+        message = str(failure.exception)
+        for expected in ("title must not be empty", "price must be numeric", "separated by |", "NUL"):
+            self.assertIn(expected, message)
+
 
 @unittest.skipUnless(os.environ.get("DATABASE_URL"), "Set DATABASE_URL to a disposable database")
 class FeedImportTests(unittest.TestCase):
@@ -176,9 +236,9 @@ class FeedImportTests(unittest.TestCase):
         before = self.snapshot()
         feeds = (
             [], [("x", "Part", "1", "999")],
-            [("x", "Part", "1", "1"), (" x ", "Part", "1", "1")],
-            [("x", "a" * 81, "1", "1")], [("", "Part", "1", "1")],
-            [("x", "Part", "1.000", "1")], [("x", "Part", "0", "1")],
+            [("x", "Part", "1", "1"), (" x ", "Different", "1", "1")],
+            [("x", "   ", "1", "1")], [("", "Part", "1", "1")],
+            [("x", "Part", "1.001", "1")], [("x", "Part", "0", "1")],
             [("x", "Part", "1", "1;2")], [("x", "Part", "1", "1||2")],
         )
         for rows in feeds:
@@ -253,15 +313,38 @@ class FeedImportTests(unittest.TestCase):
         self.assertEqual(result.added, 5000)
         self.assertEqual(result.total, 5000)
 
-    def test_supplied_feeds_are_rejected_without_partial_changes(self):
+    def test_full_titles_survive_import_changes_and_identical_reimport(self):
+        title = ("Full catalogue title " * 20).strip()
+        path = self.feed([("p", title, "1", "1")])
+        self.assertEqual(import_feed(path).added, 1)
+        before = self.snapshot()
+        self.assertEqual(before[0][0]["title"], title)
+        self.assertEqual(import_feed(path).unchanged, 1)
+        self.assertEqual(before, self.snapshot())
+        changed = title + "changed"
+        self.feed([("p", changed, "1", "1")])
+        self.assertEqual(import_feed(path).modified, 1)
+        after = self.snapshot()[0][0]
+        self.assertEqual(after["title"], changed)
+        self.assertEqual(after["status"], "modified")
+
+    def test_day_one_preserves_full_titles_and_invalid_day_two_rolls_back(self):
         directory = Path(__file__).resolve().parent.parent / "data"
         if not directory.is_dir():
             self.skipTest("Repository data fixtures are not mounted")
+        self.db.upsert_account(4, "token-4")
+        result = import_feed(directory / "feed_dia1.csv")
+        self.assertEqual(result.added, 600)
+        with (directory / "feed_dia1.csv").open(encoding="utf-8-sig", newline="") as stream:
+            expected = {r["product_id"]: r["title"].strip() for r in csv.DictReader(stream)}
+        rows = self.snapshot()[0]
+        self.assertTrue(any(len(row["title"]) > 80 for row in rows))
+        for row in rows:
+            self.assertEqual(row["title"], expected[row["product_id"]])
         before = self.snapshot()
-        for name in ("feed_dia1.csv", "feed_dia2.csv"):
-            with self.subTest(name=name), self.assertRaises(FeedValidationError):
-                import_feed(directory / name, allow_large_removals=True)
-            self.assertEqual(before, self.snapshot())
+        with self.assertRaises(FeedValidationError):
+            import_feed(directory / "feed_dia2.csv", allow_large_removals=True)
+        self.assertEqual(before, self.snapshot())
 
     def test_menu_import_success_and_explicit_override(self):
         from piezalink.cli.menu import run_menu
@@ -294,13 +377,13 @@ class FeedImportTests(unittest.TestCase):
             capture_output=True, text=True, timeout=10,
         )
         self.assertEqual(result.returncode, 1)
-        self.assertIn("Record 2", result.stderr)
+        self.assertIn("Line 2", result.stderr)
         self.assertEqual(before, self.snapshot())
 
     def test_upgrade_legacy_schema_preserves_data(self):
         with self.db.transaction() as conn:
             conn.execute("""
-                DROP TABLE catalogue_accounts, catalogue, accounts, piezalink_schema CASCADE;
+                DROP TABLE sync_operations, sync_runs, accepted_feeds, catalogue_accounts, catalogue, accounts, piezalink_schema CASCADE;
                 CREATE TABLE accounts (account_id INTEGER PRIMARY KEY, token TEXT NOT NULL);
                 CREATE TABLE catalogue (
                     id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -331,6 +414,74 @@ class FeedImportTests(unittest.TestCase):
         self.db.close()
         type(self).db = init_db()
         self.assertEqual(self.db.get_listing(1)["status"], "modified")
+
+    def test_exact_duplicates_merge_after_normalization(self):
+        from piezalink.cli.commands import format_import_result
+        rows = [(" p ", " Part ", "9,950", "2|1|1"), ("p", "Part", "9.95", "1|2")]
+        result = import_feed(self.feed(rows))
+        self.assertEqual(result.total, 1)
+        self.assertEqual(result.added, 1)
+        self.assertEqual(result.merged_duplicates, 1)
+        self.assertIn("1 identical duplicates merged", format_import_result(result))
+        before = self.snapshot()
+        self.assertEqual(import_feed(self.path).unchanged, 1)
+        self.assertEqual(before, self.snapshot())
+
+    def test_blank_lines_and_unquoted_comma_are_reported(self):
+        from decimal import Decimal
+        from piezalink.cli.commands import format_import_result
+        self.path.write_text("product_id,title,price,store_id\n\n  \np,Part,9,950,3\n")
+        result = import_feed(self.path)
+        self.assertEqual(result.skipped_blank_lines, 2)
+        self.assertEqual(result.reconstructed_prices, 1)
+        self.assertEqual(self.snapshot()[0][0]["price"], Decimal("9.95"))
+        self.assertIn("2 blank lines skipped", format_import_result(result))
+        self.assertIn("1 decimal-comma prices reconstructed", format_import_result(result))
+
+    def test_all_validation_phases_report_before_rollback(self):
+        self.db.create_listing("manual", "Manual", "1", [1], listed_manually=True)
+        before = self.snapshot()
+        rows = [
+            ("p", "Part", "FREE", "7"), ("dup", "Part", "1", "1"),
+            ("dup", "Part", "2", "1"), ("manual", "Changed", "1", "1"),
+            ("q", "", "0", "1;3"),
+        ]
+        with self.assertRaises(FeedValidationError) as failure:
+            import_feed(self.feed(rows), allow_large_removals=True)
+        for expected in ("unknown account 7", "conflicting duplicate", "manual entry", "title must not be empty", "separated by |"):
+            self.assertIn(expected, str(failure.exception))
+        self.assertEqual(before, self.snapshot())
+
+    def test_conflicting_duplicates_report_two_different_variants(self):
+        rows = [("p", "Part", "1", "1"), ("p", "Part", "1.00", "1"), ("p", "Part", "2", "1")]
+        with self.assertRaises(FeedValidationError) as failure:
+            import_feed(self.feed(rows))
+        self.assertIn("Lines 2 and 4", str(failure.exception))
+        self.assertFalse(self.snapshot()[0])
+
+    def test_only_blank_lines_never_remove_catalogue(self):
+        self.db.create_listing("p", "Part", "1", [1])
+        before = self.snapshot()
+        self.path.write_text("product_id,title,price,store_id\n\n  \n")
+        with self.assertRaises(FeedValidationError):
+            import_feed(self.path, allow_large_removals=True)
+        self.assertEqual(before, self.snapshot())
+
+    def test_version_one_title_migration_preserves_existing_data(self):
+        key = self.db.create_listing("existing", "Original title", "1.25", [1])
+        self.db.update_listing_id(key, 1, "L1")
+        before = self.db.get_listing(key)
+        with self.db.transaction() as conn:
+            conn.execute("ALTER TABLE catalogue ALTER COLUMN title TYPE VARCHAR(80)")
+            conn.execute("UPDATE piezalink_schema SET version = 1")
+        self.db.close()
+        type(self).db = init_db()
+        self.assertEqual(self.db.get_listing(key), before)
+        title = "A long title after migrating " * 20
+        self.db.update_title(key, title)
+        self.assertEqual(self.db.get_listing(key)["title"], title)
+        with self.db.transaction() as conn:
+            self.assertEqual(conn.execute("SELECT version FROM piezalink_schema").fetchone()["version"], 5)
 
 
 if __name__ == "__main__":

@@ -19,7 +19,7 @@ def main(argv=None):
         return run_menu()
     except KeyboardInterrupt:
         if args:
-            print("\nImport interrupted.", file=sys.stderr)
+            print("\nOperation interrupted; completed work is retained.", file=sys.stderr)
             return 130
         print("\nGoodbye!")
         return 0

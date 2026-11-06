@@ -7,7 +7,7 @@ from contextlib import chdir
 from pathlib import Path
 from unittest.mock import patch
 
-from piezalink.core.config import get_database_url
+from piezalink.core.config import get_accounts_path, get_database_url
 
 
 class ConfigurationTests(unittest.TestCase):
@@ -43,3 +43,23 @@ class ConfigurationTests(unittest.TestCase):
             "piezalink.core.config.find_dotenv", return_value="",
         ), self.assertRaisesRegex(ValueError, "DATABASE_URL"):
             get_database_url()
+
+
+    def test_accounts_path_can_be_explicit(self):
+        self.assertEqual(get_accounts_path(self.root / "custom.csv"), self.root / "custom.csv")
+
+    def test_accounts_path_environment_and_relative_dotenv(self):
+        (self.root / ".env").write_text("ACCOUNTS_CSV=seeds/accounts.csv\n")
+        child = self.root / "child"
+        child.mkdir()
+        with patch.dict(os.environ, {}, clear=True), chdir(child):
+            self.assertEqual(get_accounts_path(), self.root / "seeds/accounts.csv")
+        with patch.dict(os.environ, {"ACCOUNTS_CSV": "/custom/accounts.csv"}, clear=True), chdir(child):
+            self.assertEqual(get_accounts_path(), Path("/custom/accounts.csv"))
+
+    def test_accounts_file_is_found_above_working_directory(self):
+        (self.root / "accounts.csv").write_text("account_id,token\n1,test\n")
+        child = self.root / "child"
+        child.mkdir()
+        with patch.dict(os.environ, {}, clear=True), chdir(child):
+            self.assertEqual(get_accounts_path(), self.root / "accounts.csv")

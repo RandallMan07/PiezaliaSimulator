@@ -51,8 +51,14 @@ class DatabaseTests(unittest.TestCase):
         for kwargs in ({"status": "unknown"}, {"title": ""}, {"product_id": ""}):
             with self.assertRaises(psycopg.errors.CheckViolation):
                 self.create(**{"product_id": "new", **kwargs})
-        with self.assertRaises(psycopg.errors.StringDataRightTruncation):
-            self.create(product_id="long", title="a" * 81)
+
+    def test_full_titles_are_stored_and_updated(self):
+        original = "Long source title " * 20
+        key = self.create(product_id="long", title=original)
+        self.assertEqual(self.db.get_listing(key)["title"], original)
+        updated = original + "updated"
+        self.db.update_title(key, updated)
+        self.assertEqual(self.db.get_listing(key)["title"], updated)
 
     def test_price_validation_and_updates(self):
         key = self.create()

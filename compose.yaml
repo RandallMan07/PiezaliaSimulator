@@ -1,0 +1,60 @@
+services:
+  piezalink:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: piezalink:latest
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:postgres@piezalia-db:5432/rovira}
+      ACCOUNTS_CSV: ${ACCOUNTS_CSV:-/app/accounts.csv}
+      PORTAL_BASE_URL: ${PORTAL_BASE_URL:-http://portal:8080}
+      PORTAL_TIMEOUT_SECONDS: ${PORTAL_TIMEOUT_SECONDS:-10}
+      SYNC_RETRY_ATTEMPTS: ${SYNC_RETRY_ATTEMPTS:-5}
+      SYNC_RETRY_BASE_SECONDS: ${SYNC_RETRY_BASE_SECONDS:-1}
+      SYNC_RETRY_CAP_SECONDS: ${SYNC_RETRY_CAP_SECONDS:-30}
+      SYNC_RETRY_BUDGET_SECONDS: ${SYNC_RETRY_BUDGET_SECONDS:-120}
+    depends_on:
+      piezalia-db:
+        condition: service_healthy
+    init: true
+    networks:
+      - piezalink
+
+  piezalia-db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-rovira}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    volumes:
+      - piezalia-db-data:/var/lib/postgresql/data
+    networks:
+      - piezalink
+    healthcheck:
+      test: ["CMD-SHELL", 'pg_isready -h 127.0.0.1 -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 3s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  portal:
+    profiles: [simulation]
+    build:
+      context: ./portal-sim
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/openapi.json', timeout=2)"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    networks:
+      - piezalink
+
+
+networks:
+  piezalink:
+    driver: bridge
+
+volumes:
+  piezalia-db-data:
