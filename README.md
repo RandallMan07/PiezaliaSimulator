@@ -3,8 +3,20 @@
 Rovira catalogue importer and synchronizer with a Python CLI, a terminal menu, and persistent
 PostgreSQL storage. See [application documentation](app/README.md) for validation,
 database APIs, and tests.
+The AI conversation used during development is recorded in [AI-PROMPTS.md](AI-PROMPTS.md).
 The [rollback decision](app/README.md#whole-feed-validation-and-rollback) explains
 why invalid feeds preserve the last accepted catalogue.
+
+For testing this rollback decision, the reported errors in `data/feed_dia2.csv`
+were manually corrected in `data/feed_dia2_corrected.csv`; the supplied original
+is unchanged. Missing/invalid prices, titles, and account assignments use day-one
+values. Clear formatting errors were normalized (account separators, extra CSV
+field, thousands separator, and currency suffix). Conflicting product duplicates
+keep their first occurrence. The row without a product ID matches the title of
+existing product `26013` and was removed in favor of its identified row; the
+delimiter-only empty record was also removed. These are test assumptions, not
+confirmed business corrections or automatic importer behavior. In production,
+the supplier would need to confirm ambiguous values before retrying the import.
 
 ## Repository layout
 
@@ -13,7 +25,7 @@ why invalid feeds preserve the last accepted catalogue.
 - `app/`: Python package, packaging configuration, and developer notes.
 - `data/`: simulation feeds, bundled into the image at `/app/data/`.
 - `accounts.csv`: supplied accounts, loaded automatically on first database initialization.
-- `portal-sim/`: unchanged marketplace simulator, optionally started with the `simulation` profile.
+- `portal-sim/`: unchanged marketplace simulator, started by default as `portal`.
 - `tests/`: application and PostgreSQL integration tests.
 
 ## Run with Docker Compose
@@ -26,17 +38,19 @@ credentials must be percent-encoded in `DATABASE_URL` only.
 ```sh
 cp .env.example .env                    # Fresh checkout only
 # Edit .env as needed.
-docker compose up -d --build            # Start both containers in the background
+docker compose up -d --build            # Start the app, database, and simulator
 docker compose exec piezalink bash     # Enter the app container
 ```
 
-Compose starts `piezalia-db` and waits for its health check before starting the
-PiezaLink container. PiezaLink is installed but does not launch automatically;
+Compose starts `piezalia-db` and `portal`, and waits for both health checks before
+starting the PiezaLink container. The simulator docs are available from your
+machine at `http://localhost:80/docs` and inside Compose at `http://portal:8080/docs`.
+PiezaLink is installed but does not launch automatically;
 the container stays running with `sleep infinity`. The first call to `init_db()`
 (e.g. during import) creates/upgrades the schema and seeds `accounts.csv` in one
 transaction. Existing tokens are preserved; later startups do not reload the file.
 The one-time migration also adds missing accounts to existing simulation databases.
-Both services use the shared `piezalink` network. The database is accessible within
+All three services use the shared `piezalink` network. The database is accessible within
 that network on port 5432; no host port is needed for this setup.
 
 ```sh
@@ -49,7 +63,7 @@ The first database initialization loads all four supplied accounts automatically
 Day one's full titles are stored,
 including those over 80 characters; marketplace title checks belong to publishing.
 Day two contains other invalid records and is rejected without partial changes.
-Correct a separate copy before importing it. To mount corrected feeds, use:
+Use `data/feed_dia2_corrected.csv` for the corrected test scenario. To mount corrected feeds, use:
 
 ```sh
 docker compose run --rm -v "$PWD/data:/feeds:ro" \
@@ -59,14 +73,13 @@ docker compose run --rm -v "$PWD/data:/feeds:ro" \
 ## Synchronize the catalogue
 
 ```sh
-docker compose --profile simulation up -d --build --wait
+docker compose up -d --build --wait
 docker compose exec piezalink piezalink import data/feed_dia1.csv
 docker compose exec piezalink piezalink sync
 ```
 
 `sync` is also available in the menu. Reimport once after upgrading to establish
-the accepted-feed marker. The optional simulator runs as `portal` on the shared
-network; select another reachable API with `PORTAL_BASE_URL` in `.env`. Existing
+the accepted-feed marker. The simulator runs as `portal` on the shared network; select another reachable API with `PORTAL_BASE_URL` in `.env`. Existing
 standalone simulators retain their own state.
 
 Sync performs one bounded pass and leaves newer work for the next cronjob.
@@ -96,7 +109,27 @@ Without Compose, use `docker run -d --name piezalink-dev piezalink:latest`, then
 `docker exec -it piezalink-dev bash` or `docker exec -it piezalink-dev piezalink`.
 Pass the database environment and network settings when creating that container.
 
-The simulator runs as its own optional service. To build the app without Compose, use
+The simulator runs as its own service and keeps the startup command from its
+supplied Dockerfile. Its state is in memory and is lost when its process restarts. To build the app without Compose, use
 `docker build -t piezalink .`; running it still requires a reachable PostgreSQL
 server. For Python running directly on the host, use a host-reachable URL instead
 of Compose's internal `piezalia-db` hostname.
+
+## Inspect a product
+
+```sh
+docker compose exec piezalink piezalink status 8090
+```
+
+Menu option **3. Product status** shows the same report. It includes product
+details, last synchronization, and per-account listing IDs, pending work, errors,
+and warnings, using the database's last known state. Dates are UTC; the most
+recent confirmation in one account does not mean all accounts are synchronized.
+
+Status includes accounts with current memberships, historical product operations,
+or account errors. An unrelated account error is labeled explicitly. Confirmed
+retirements count toward last sync even after their membership rows are cleaned
+up; write attempts are also recovered from operation history. `sold` means the
+product is absent from the accepted catalogue feed, while each account's status
+shows whether portal retirement is confirmed, pending, or unverified. A partial
+sync does not undo successful work in other accounts.

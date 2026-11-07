@@ -16,6 +16,8 @@ services:
     depends_on:
       piezalia-db:
         condition: service_healthy
+      portal:
+        condition: service_healthy
     init: true
     networks:
       - piezalink
@@ -39,9 +41,11 @@ services:
     restart: unless-stopped
 
   portal:
-    profiles: [simulation]
     build:
       context: ./portal-sim
+    image: portal-sim:latest
+    ports:
+      - "127.0.0.1:80:8080"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/openapi.json', timeout=2)"]
       interval: 3s
@@ -50,7 +54,7 @@ services:
       start_period: 5s
     networks:
       - piezalink
-
+    restart: unless-stopped
 
 networks:
   piezalink:

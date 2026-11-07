@@ -79,8 +79,20 @@ def sync_catalogue():
         print(f"Sync failed: {error}")
 
 
+def product_status():
+    from argparse import Namespace
+    from piezalink.cli.commands import _run_status
+    product_id = input("Product ID / SKU (blank to return): ").strip()
+    if product_id:
+        _run_status(Namespace(product_id=product_id))
+
+
 def run_menu():
     print_logo()
-    show_menu(Menu("PiezaLink", (MenuItem("Import catalogue", import_catalogue), MenuItem("Sync catalogue", sync_catalogue))))
+    show_menu(Menu("PiezaLink", (
+        MenuItem("Import catalogue", import_catalogue),
+        MenuItem("Sync catalogue", sync_catalogue),
+        MenuItem("Product status", product_status),
+    )))
     print("Goodbye!")
     return 0

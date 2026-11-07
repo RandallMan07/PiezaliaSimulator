@@ -2,8 +2,9 @@
 
 Python CLI and interactive terminal application for Rovira’s catalogue synchronization.
 `import <feed>` loads a complete catalogue into Postgres; `sync` reconciles it
-with Piezalia. `status` will be added separately. The menu offers Import catalogue,
-Sync catalogue, and Exit.
+with Piezalia; `status <product_id>` shows the database record and synchronization
+state for each account. The menu offers Import catalogue, Sync catalogue,
+Product status, and Exit.
 
 ## Install and run
 
@@ -72,8 +73,11 @@ The image installs PiezaLink and Bash, with no application entry point.
 Its default command is `sleep infinity`, keeping the container available for
 `docker compose exec`. Run `piezalink` explicitly from a shell or with exec.
 For a one-off container, use `docker compose run --rm piezalink piezalink --help`.
-The supplied `portal-sim/` remains unchanged. Compose's optional `simulation`
-profile starts it as `portal` on the app network; it does not publish a host port.
+The supplied `portal-sim/` remains unchanged. Compose starts it as `portal` on
+the app network, accessible internally at `http://portal:8080/docs` and from your
+machine at `http://localhost:80/docs` (mapping `127.0.0.1:80` to container port 8080).
+The app waits for its health check and the database health check
+before starting.
 
 The build context is the repository root, so the image also includes
 `data/feed_dia*.csv` at `/app/data/`. For example, from a container shell:
@@ -247,10 +251,10 @@ docker compose run --rm -v "$PWD/data:/feeds:ro" \
 
 ## Synchronize with Piezalia
 
-Start the optional simulator and app from the repository root:
+Start the simulator and app from the repository root:
 
 ```sh
-docker compose --profile simulation up -d --build --wait
+docker compose up -d --build --wait
 # Establish the accepted-feed marker, including once after upgrading an older DB.
 docker compose exec piezalink piezalink import data/feed_dia1.csv
 docker compose exec piezalink piezalink sync
@@ -261,7 +265,7 @@ Alternatively select **Sync catalogue** in the menu. An already-running external
 simulator/provider can be selected with `PORTAL_BASE_URL`; make its hostname
 reachable from the app's Docker network. Native Python execution defaults to
 `http://localhost:8080`, while Compose defaults to `http://portal:8080`.
-The optional Compose simulator is independent of previously started simulator
+The Compose simulator is independent of previously started simulator
 containers and their in-memory state.
 
 The service requires a successfully imported complete feed. Older databases need
@@ -324,7 +328,7 @@ the run reports partial success until that account is renewed.
 `sync_runs` stores run summaries; `sync_operations` stores requested payloads,
 revisions, remote IDs, states, warnings, and errors. Account rows expose the latest
 account failure; membership rows expose applied revisions, attempt/success dates,
-and errors. These records support the future `status` command. Successful operations
+and errors. These records are displayed by the `status` command. Successful operations
 are not undone or blindly repeated on restart.
 
 ### Sync integration tests
@@ -333,12 +337,12 @@ Use an isolated project because the integration suite resets its database and
 simulator. It does not use the normal Compose project's data:
 
 ```sh
-docker compose -p piezalink-test --profile simulation up -d --build --wait
-docker compose -p piezalink-test --profile simulation run --rm -T \
+docker compose -p piezalink-test up -d --build --wait
+docker compose -p piezalink-test run --rm -T \
     -e PIEZALINK_SYNC_INTEGRATION=1 -e PORTAL_BASE_URL=http://portal:8080 \
     -v "$PWD/tests:/tests:ro" -v "$PWD/data:/data:ro" \
     --entrypoint python piezalink -m unittest discover -s /tests -v
-docker compose -p piezalink-test --profile simulation down --volumes
+docker compose -p piezalink-test down --volumes
 ```
 
 ## Decisions
@@ -356,6 +360,15 @@ or even having a `--help` option.
 This last one could be interesting, so I'd keep it anyway.
 
 ### Whole-feed validation and rollback
+
+For testing, the reported errors in the supplied day-two feed were manually
+corrected in [`data/feed_dia2_corrected.csv`](../../data/feed_dia2_corrected.csv).
+The original is unchanged. Missing/invalid values use day-one data, clear format
+errors are normalized, and conflicting duplicates keep their first occurrence.
+The unidentified row matching product `26013` was removed in favor of its existing
+identified row, along with the empty delimiter-only record. These choices are
+test assumptions, not confirmed supplier corrections; the importer still rejects
+the original feed and rolls back. See the root README for the correction policy.
 
 We import the complete feed in one transaction and roll back the entire import
 when unresolved validation errors remain. This decision follows the risks described
@@ -388,10 +401,43 @@ with deterministic truncation only in the publishing payload.
 
 ### Packaging and Docker entry point
 
-<!-- Simply reproducibility, this way I know th -->
+We package all the services using `docker compose` and a `compose.yaml` to make
+the whole project reproducible.
+
+We add the simulator as an extra service apart from the database and piezalink ones.
+The entrypoint in the piezalink service was originally the direct access to the menu, while developing we saw the necessity of holding it up, just stand by, for being able to enter the container for debugging.
 
 ## Source consulted
 
 - [The easy (and nice) way to do CLI apps in Python](https://trstringer.com/easy-and-nice-python-cli/)
 - [Programar tareas con cron y crontab en Linux](https://www.stackscale.com/es/blog/cron-crontab-linux/)
 - [The most popular PostgreSQL adapter for Python](https://www.psycopg.org/)
+
+## Product status for support
+
+```sh
+docker compose exec piezalink piezalink status 8090
+```
+
+Or choose **3. Product status** in the menu and enter the product ID / SKU;
+a blank input returns to the menu. IDs are exact strings, including leading zeros.
+The report includes the full title, price, catalogue status, creation/modification
+dates, and the latest recorded listing confirmation. Each account shows whether
+the product is requested, its portal listing ID, its own last confirmation and
+write attempt, account check time, errors, warnings, and latest recorded operation.
+It explains pending publication, updates, retirements, and uncertain requests.
+All dates are UTC. A confirmation in one account does not imply success in all
+accounts. No portal API requests are made: this is the database's last known state.
+Account checks and historical operation records are labeled separately from
+listing confirmations. Missing products produce a clear message and exit code 1;
+a successful lookup returns 0 even if synchronization is pending. Products removed
+from the local catalogue have no current details; historical operations alone
+are not presented as a current product. No schema migration is needed.
+
+Status includes accounts with current memberships, historical product operations,
+or account errors. An unrelated account error is labeled explicitly. Confirmed
+retirements count toward last sync even after their membership rows are cleaned
+up; write attempts are also recovered from operation history. `sold` means the
+product is absent from the accepted catalogue feed, while each account's status
+shows whether portal retirement is confirmed, pending, or unverified. A partial
+sync does not undo successful work in other accounts.
