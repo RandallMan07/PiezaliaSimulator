@@ -3,7 +3,7 @@
 Rovira catalogue importer and synchronizer with a Python CLI, a terminal menu, and persistent
 PostgreSQL storage. See [application documentation](app/README.md) for validation,
 database APIs, and tests.
-The AI conversation used during development is recorded in [AI-PROMPTS.md](AI-PROMPTS.md).
+The AI conversation used during development is recorded in [AI-PROMPT.md](AI-PROMPT.md).
 The [rollback decision](app/README.md#whole-feed-validation-and-rollback) explains
 why invalid feeds preserve the last accepted catalogue.
 
